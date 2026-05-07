@@ -5,6 +5,7 @@
 .cache/
 node_modules/
 .env
+.env.*
 secrets.*
 credentials.*
 privateKey.pem
