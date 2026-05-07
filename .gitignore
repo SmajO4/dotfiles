@@ -1,0 +1,17 @@
+.DS_Store
+*.log
+*.tmp
+*.bak
+.cache/
+node_modules/
+.env
+secrets.*
+credentials.*
+privateKey.pem
+certificate.pem
+Cookies
+History
+Login Data
+Session Storage/
+GPUCache/
+Cache/
