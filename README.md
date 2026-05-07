@@ -1,5 +1,11 @@
 # Smajo dotfiles
 
+- Homebrew/Brewfile = instalira programe
+- dotfiles/config   = čuva konfiguracije za ~/.config
+- dotfiles/home     = čuva konfiguracije za ~
+- install.sh        = pravi symlinkove
+- GitHub            = backup i sinhronizacija
+
 My personal Linux/macOS development environment.
 
 ## Includes
