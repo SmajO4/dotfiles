@@ -1,0 +1,25 @@
+[opener]
+browser = [
+    { run = 'firefox --new-window "$@"', orphan = true, desc = "Firefox (Novi prozor)" }
+]
+image = [
+    { run = 'imv "$@"', orphan = true, desc = "Pregled slika (imv)" }
+]
+edit = [
+  { run = 'NVIM_APPNAME=nvim-lazyvim nvim "$@"', block = true },
+]
+
+[open]
+prepend_rules = [
+    { mime = "text/html", use = "browser" },
+    { name = "*.html", use = "browser" },
+    { mime = "image/*", use = "image" }
+]
+
+[plugin]
+prepend_previewers = [
+    { name = "*.md", run = 'piper -- /home/smajo/.config/yazi/md.sh "$1"' },
+    { mime = "text/html", run = 'piper -- w3m -dump -T text/html "$1"' },
+    { name = "*.html", run = 'piper -- w3m -dump -T text/html "$1"' }
+]
+
