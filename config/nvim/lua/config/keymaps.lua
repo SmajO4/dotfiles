@@ -32,6 +32,72 @@ map({ "n", "v" }, "<leader>lf", function()
 end, { desc = "Format selected code or whole file" })
 
 -- -----------------------------------------------------------------------------
+-- 3. PRECIZNO OTVARANJE NOVOG REDA ISPOD TRENUTNOG REDA
+-- -----------------------------------------------------------------------------
+-- Prečica:
+--   o u normal modu
+--
+-- Zašto ovo postoji?
+--   Obični Neovim 'o' koristi automatsku indentaciju, ali ti želiš veoma
+--   konkretno ponašanje:
+--
+--   1. Ako je trenutna linija početak bloka:
+--        void foo() {
+--      tada novi red treba dobiti dodatni indent nivo.
+--
+--   2. Ako si već unutar bloka:
+--            nekaLinija();
+--      novi red treba zadržati isti indent.
+--
+--   3. Ako si ručno napravio dublju indentaciju:
+--                posebnaLinija();
+--      novi red MORA ostati na toj istoj dubljoj indentaciji,
+--      a ne da te editor vraća na "standardni" indent bloka.
+--
+-- Dodatno:
+--   Ako je '{' prije inline komentara, npr.
+--        void foo() { // komentar
+--   i dalje se prepoznaje da treba ući jedan nivo dublje.
+local function open_line_below_with_relative_indent()
+  local current_line = vim.api.nvim_get_current_line()
+
+  -- Uzimamo početne razmake trenutne linije.
+  local current_indent = current_line:match("^%s*") or ""
+
+  -- Za odluku o dodatnom indentu ignorišemo završni whitespace i // komentar.
+  local code_part = current_line
+    :gsub("%s+$", "")
+    :gsub("%s*//.*$", "")
+    :gsub("%s+$", "")
+
+  -- Ako linija završava otvaranjem bloka/zagrade, dodaj još jedan indent nivo.
+  local extra_indent = ""
+  if code_part:match("[{[(]$") then
+    local shiftwidth = vim.bo.shiftwidth
+    if shiftwidth == 0 then
+      shiftwidth = vim.o.shiftwidth
+    end
+    extra_indent = string.rep(" ", shiftwidth)
+  end
+
+  local new_line = current_indent .. extra_indent
+  local current_row = vim.api.nvim_win_get_cursor(0)[1]
+
+  -- Ubacuje novi red odmah ispod trenutnog.
+  vim.api.nvim_buf_set_lines(0, current_row, current_row, false, { new_line })
+
+  -- Postavlja kursor na kraj pripremljene indentacije.
+  vim.api.nvim_win_set_cursor(0, { current_row + 1, #new_line })
+
+  -- Odmah ulazi u Insert mode.
+  vim.cmd("startinsert!")
+end
+
+map("n", "o", open_line_below_with_relative_indent, {
+  desc = "Open line below with relative indentation",
+})
+
+-- -----------------------------------------------------------------------------
 -- NAPOMENA ZA AI ASISTENTA
 -- -----------------------------------------------------------------------------
 -- Copilot prečice se NAMJERNO ne nalaze u ovom fajlu.
@@ -43,7 +109,7 @@ end, { desc = "Format selected code or whole file" })
 --   keymaps.lua ostaje za opšte editor komande, a copilot.lua za AI komande.
 
 -- -----------------------------------------------------------------------------
--- 3. TERMINAL I POKRETANJE PROGRAMA
+-- 4. TERMINAL I POKRETANJE PROGRAMA
 -- -----------------------------------------------------------------------------
 -- Spas iz terminal moda: Dupli ESC te vraća u normalni Neovim mod
 map("t", "<Esc><Esc>", "<C-\\><C-n>", { desc = "Exit terminal mode to normal mode" })
@@ -54,7 +120,7 @@ map("n", "<leader>ot", function()
 end, { desc = "Open standard terminal at the bottom" })
 
 -- -----------------------------------------------------------------------------
--- 4. UNIVERZALNI RUNNER ZA STUDENTSKI WORKFLOW
+-- 5. UNIVERZALNI RUNNER ZA STUDENTSKI WORKFLOW
 -- -----------------------------------------------------------------------------
 -- Opis:
 --   Centralizovana funkcija za pokretanje komandi u donjem terminalu.
