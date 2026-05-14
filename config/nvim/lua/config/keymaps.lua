@@ -152,69 +152,69 @@ vim.api.nvim_create_autocmd("FileType", {
 map("t", "<Esc><Esc>", "<C-\\><C-n>", { desc = "Exit terminal mode to normal mode" })
 
 -- -----------------------------------------------------------------------------
--- [NOVO SMAJO] TERMINAL PANEL SA VIŠE TERMINALA U ISTOM PROSTORU
+-- [NOVO SMAJO] DONJI TERMINAL PANEL SA TERMINAL-TABOVIMA
 -- -----------------------------------------------------------------------------
--- Ideja:
---   Umjesto da se svaki novi terminal otvara kao novi split jedan iznad drugog,
---   sada imamo:
+-- Glavna ideja:
 --
---     - JEDAN donji terminal panel
---     - VIŠE terminal buffer sesija unutar tog panela
---     - prebacivanje između terminala kao između "terminal tabova"
+--   Umjesto da svaki novi terminal pravi NOVI donji split i da se terminali
+--   slažu jedan iznad drugog, sada imamo:
 --
--- Vizuelno:
---   Iznad terminal panela prikazuje se winbar, npr:
---
---      Terminali:  [1]   2   3
---
---   Aktivni terminal je označen uglastim zagradama.
+--     1. JEDAN donji terminal panel
+--     2. Više terminal buffera unutar tog istog panela
+--     3. Prebacivanje između terminala kao između "tabova"
+--     4. Vizuelnu mini traku terminal-tabova kroz winbar iznad terminal panela
 --
 -- Prečice:
---   <leader>ot = Space + o + t
---     Toggle cijelog terminal panela.
 --
---   <leader>oT = Space + o + Shift+t
---     Otvara novi dodatni terminal u ISTOM donjem panelu.
---
---   <leader>on = Space + o + n
---     Prebaci na sljedeći terminal.
---
---   <leader>op = Space + o + p
---     Prebaci na prethodni terminal.
---
---   <leader>ok = Space + o + k
---     Sakrij cijeli terminal panel, ali terminali ostaju živi.
---
---   <leader>oq = Space + o + q
---     Ubij trenutno aktivni terminal.
+--   Space + o + t  -> toggle cijeli donji terminal panel
+--   Space + o + T  -> napravi novi terminal-tab i odmah ga prikaži
+--   Space + o + n  -> sljedeći terminal-tab
+--   Space + o + p  -> prethodni terminal-tab
+--   Space + o + k  -> sakrij CIJELI donji terminal panel
+--   Space + o + q  -> ubij SAMO trenutni terminal-tab
 --
 -- Važna napomena:
---   Ove prečice su namjerno definisane samo u NORMAL modu.
---   Pošto ti je <leader> = Space, kada bismo ih mapirali i u terminal modu,
---   Neovim bi imao zadršku pri svakom normalnom kucanju razmaka u shellu.
+--   Ove terminal prečice su namjerno mapirane samo u NORMAL modu.
+--   Pošto ti je <leader> = Space, mapiranje Space-prefiksa u terminal modu
+--   bi pravilo kašnjenje pri običnom kucanju razmaka u shellu.
 --
---   Zato je workflow iz terminala:
---     1. Esc Esc
---     2. Space + o + ...
+--   Zato je workflow:
+--     1. u terminalu pritisni Esc Esc
+--     2. onda koristi Space + o + ...
 --
--- Šta zadržavamo iz prethodnog rješenja:
---   - ako je explorer otvoren lijevo, terminal panel je desno od njega
---   - terminal ne ulazi ispod explorera
---   - terminal ima winfixheight i ne raste ružno pri Niri resize-u
---   - terminal bufferi su unlisted i ne smetaju <Tab>/<S-Tab> navigaciji
+-- Ponašanje koje ovdje dobijamo:
+--
+--   - terminali se više NE slažu vertikalno
+--   - svi terminali dijele isti donji prostor
+--   - hide sakrije kompletan terminal panel, ali terminal procesi ostaju živi
+--   - unhide vraća terminal na kojem si posljednje bio
+--   - kill gasi samo trenutni terminal i prebacuje te na drugi postojeći terminal
+--   - ako ubiješ zadnji terminal, panel se zatvara
+--
+-- Dodatno:
+--   Terminal-tabovi se namjerno NE pojavljuju u glavnom Bufferline-u fajlova.
+--   Umjesto toga, imaju svoj mali "terminal tabline" iznad donjeg panela.
+--   To ostavlja tvoj <Tab>/<S-Tab> workflow za file buffere čistim i stabilnim.
 
--- Lista svih terminal buffera kojima upravlja ovaj panel.
-local terminal_buffers = {}
+local terminal_manager = {
+  -- Lista svih terminal buffera kojima upravlja ovaj mini manager.
+  buffers = {},
 
--- Indeks trenutno aktivnog terminala u terminal_buffers.
-local active_terminal_index = nil
+  -- Jedini donji prozor u kojem se terminali prikazuju.
+  -- Ako je panel sakriven, ovo postaje nil.
+  panel_win = nil,
 
--- Window ID donjeg terminal panela.
--- Ako je nil ili nevalidan, panel je skriven/zatvoren.
-local terminal_panel_win = nil
+  -- Indeks terminala koji je posljednji bio aktivan.
+  -- Koristi se za hide/unhide i za prebacivanje.
+  active_index = nil,
+
+  -- Visina donjeg terminal panela u redovima.
+  -- Ako kasnije poželiš viši/niži panel, mijenjaš samo ovu vrijednost.
+  height = 12,
+}
 
 -- Pomoćna funkcija:
--- Provjerava da li je buffer validan terminal buffer.
+-- Provjerava da li buffer još postoji i da li je terminal buffer.
 local function is_valid_terminal_buffer(buf)
   return buf
     and vim.api.nvim_buf_is_valid(buf)
@@ -222,28 +222,58 @@ local function is_valid_terminal_buffer(buf)
 end
 
 -- Pomoćna funkcija:
--- Uklanja iz naše liste terminale koji više ne postoje.
--- Ovo je korisno ako neki terminal buffer nestane ručno ili neočekivano.
-local function cleanup_terminal_buffers()
-  local cleaned = {}
-  local new_active_index = nil
+-- Da li je naš donji terminal panel trenutno vidljiv?
+local function terminal_panel_is_visible()
+  return terminal_manager.panel_win and vim.api.nvim_win_is_valid(terminal_manager.panel_win)
+end
 
-  for index, buf in ipairs(terminal_buffers) do
+-- Pomoćna funkcija:
+-- Pronalazi indeks terminal buffera u našoj listi.
+local function find_managed_terminal_index(buf)
+  for index, terminal_buf in ipairs(terminal_manager.buffers) do
+    if terminal_buf == buf then
+      return index
+    end
+  end
+
+  return nil
+end
+
+-- Pomoćna funkcija:
+-- Čisti eventualne stare/nevažeće buffer reference.
+--
+-- Ovo je korisno ako:
+--   - neki terminal buffer obrišeš ručno
+--   - neki plugin zatvori buffer izvan ovog managera
+--   - Neovim očisti buffer u nekom rubnom slučaju
+local function cleanup_terminal_manager()
+  local valid_buffers = {}
+  local remapped_active_index = nil
+
+  for old_index, buf in ipairs(terminal_manager.buffers) do
     if is_valid_terminal_buffer(buf) then
-      table.insert(cleaned, buf)
+      table.insert(valid_buffers, buf)
 
-      if active_terminal_index == index then
-        new_active_index = #cleaned
+      if terminal_manager.active_index == old_index then
+        remapped_active_index = #valid_buffers
       end
     end
   end
 
-  terminal_buffers = cleaned
+  terminal_manager.buffers = valid_buffers
 
-  if #terminal_buffers == 0 then
-    active_terminal_index = nil
+  if #terminal_manager.buffers == 0 then
+    terminal_manager.active_index = nil
+  elseif remapped_active_index then
+    terminal_manager.active_index = remapped_active_index
+  elseif terminal_manager.active_index then
+    terminal_manager.active_index = math.min(terminal_manager.active_index, #terminal_manager.buffers)
   else
-    active_terminal_index = new_active_index or math.min(active_terminal_index or 1, #terminal_buffers)
+    terminal_manager.active_index = #terminal_manager.buffers
+  end
+
+  if terminal_manager.panel_win and not vim.api.nvim_win_is_valid(terminal_manager.panel_win) then
+    terminal_manager.panel_win = nil
   end
 end
 
@@ -269,7 +299,7 @@ local function find_main_editor_like_window()
         local buf = vim.api.nvim_win_get_buf(win)
         local buftype = vim.bo[buf].buftype
 
-        -- Ne želimo kao osnovu koristiti terminal panel ili terminal buffere.
+        -- Ne želimo kao osnovu koristiti već otvoren terminal.
         if buftype ~= "terminal" then
           local width = vim.api.nvim_win_get_width(win)
 
@@ -290,279 +320,323 @@ local function find_main_editor_like_window()
 end
 
 -- Pomoćna funkcija:
--- Provjerava da li je terminal panel trenutno vidljiv.
-local function is_terminal_panel_visible()
-  return terminal_panel_win and vim.api.nvim_win_is_valid(terminal_panel_win)
-end
-
--- Pomoćna funkcija:
--- Podešava winbar terminal panela:
+-- Pravi tekst za mini "terminal tabline" iznad donjeg panela.
 --
---    Terminali:  [1]   2   3
+-- Primjer:
+--   󰆍 Terminali:  [1]  2  3
 --
--- Aktivni terminal je označen uglastim zagradama.
-local function update_terminal_winbar()
-  if not is_terminal_panel_visible() then
-    return
-  end
+-- Broj u uglastim zagradama je trenutno aktivni terminal.
+local function build_terminal_panel_winbar()
+  cleanup_terminal_manager()
 
-  cleanup_terminal_buffers()
+  local parts = { "  󰆍 Terminals: " }
 
-  if #terminal_buffers == 0 then
-    vim.wo[terminal_panel_win].winbar = "  Terminali: nema otvorenih terminala "
-    return
-  end
-
-  local labels = {}
-
-  for index, _ in ipairs(terminal_buffers) do
-    if index == active_terminal_index then
-      table.insert(labels, "[" .. index .. "]")
+  for index, _ in ipairs(terminal_manager.buffers) do
+    if index == terminal_manager.active_index then
+      table.insert(parts, string.format(" [%d] ", index))
     else
-      table.insert(labels, tostring(index))
+      table.insert(parts, string.format("  %d  ", index))
     end
   end
 
-  vim.wo[terminal_panel_win].winbar = "  Terminali:  " .. table.concat(labels, "   ") .. " "
+  table.insert(parts, "   │   [o-T] new  |  [o-p] prev  |  [o-n] next  |  [o-q]  quit")
+
+  return table.concat(parts, "")
 end
 
 -- Pomoćna funkcija:
--- Daje terminal bufferu poželjne osobine.
-local function configure_current_terminal_buffer()
-  -- Terminali se ne pojavljuju u tvojoj regularnoj <Tab>/<S-Tab> buffer navigaciji.
-  vim.bo.buflisted = false
+-- Postavlja izgled i osnovne opcije našeg terminal panela.
+--
+-- Bitno:
+--   'winbar' je window-local opcija, pa ga namjerno osvježavamo
+--   svaki put kada terminal panel otvaramo ili mijenjamo aktivni terminal.
+local function configure_terminal_panel_window()
+  if not terminal_panel_is_visible() then
+    return
+  end
 
-  -- Kad se terminal sakrije, njegov buffer i proces ostaju živi.
-  vim.bo.bufhidden = "hide"
+  local panel_win = terminal_manager.panel_win
+  local panel_buf = vim.api.nvim_win_get_buf(panel_win)
 
-  -- Donji panel zadržava visinu stabilnijom pri promjenama layouta.
-  -- Ovo je ono što ti je već lijepo riješilo Niri resize problem.
-  vim.wo.winfixheight = true
+  -- Terminal buffere ne želimo u standardnoj listi file buffera.
+  vim.bo[panel_buf].buflisted = false
+
+  -- Stabilnija visina panela pri promjenama layouta/prozora.
+  vim.wo[panel_win].winfixheight = true
+
+  -- Mini traka terminal-tabova iznad samog donjeg terminala.
+  vim.wo[panel_win].winbar = build_terminal_panel_winbar()
+
+  -- Osvježavanje prikaza winbar-a.
+  vim.cmd("redrawstatus!")
 end
 
 -- Pomoćna funkcija:
--- Otvara prazan donji terminal panel ispod glavnog editora.
--- Još ne bira koji će terminal buffer biti prikazan.
-local function open_terminal_panel_window()
+-- Fokusira donji terminal panel i vraća korisnika u terminal insert mode.
+local function focus_terminal_panel()
+  if not terminal_panel_is_visible() then
+    return
+  end
+
+  vim.api.nvim_set_current_win(terminal_manager.panel_win)
+  configure_terminal_panel_window()
+  vim.cmd("startinsert")
+end
+
+-- Pomoćna funkcija:
+-- Prikazuje već postojeći terminal buffer u JEDINOM donjem panelu.
+local function show_terminal_at_index(index)
+  cleanup_terminal_manager()
+
+  local buf = terminal_manager.buffers[index]
+  if not is_valid_terminal_buffer(buf) then
+    return
+  end
+
+  terminal_manager.active_index = index
+
+  -- Ako panel već postoji, samo mijenjamo buffer koji je prikazan u njemu.
+  -- Ovo je ključ cijele logike: nema novog splita, samo "terminal-tab switch".
+  if terminal_panel_is_visible() then
+    vim.api.nvim_win_set_buf(terminal_manager.panel_win, buf)
+    focus_terminal_panel()
+    return
+  end
+
+  -- Ako je panel sakriven, ponovo pravimo JEDAN donji split
+  -- i u njega vraćamo posljednji aktivni terminal buffer.
   local target_window = find_main_editor_like_window()
 
   if vim.api.nvim_win_is_valid(target_window) then
     vim.api.nvim_set_current_win(target_window)
   end
 
-  -- Otvara panel ispod glavnog editor prozora,
-  -- tako da explorer ostaje njegova lijeva granica.
-  vim.cmd("belowright split | resize 10")
+  vim.cmd("belowright split")
+  terminal_manager.panel_win = vim.api.nvim_get_current_win()
+  vim.cmd("resize " .. terminal_manager.height)
 
-  terminal_panel_win = vim.api.nvim_get_current_win()
-
-  -- Zaključavamo visinu samog panela.
-  vim.wo.winfixheight = true
+  vim.api.nvim_win_set_buf(terminal_manager.panel_win, buf)
+  focus_terminal_panel()
 end
 
 -- Pomoćna funkcija:
--- Prikaže dati terminal buffer u donjem panelu.
-local function show_terminal_buffer(index)
-  cleanup_terminal_buffers()
-
-  if #terminal_buffers == 0 then
-    vim.notify("Nema otvorenih terminala.", vim.log.levels.WARN)
-    return
-  end
-
-  if index < 1 then
-    index = #terminal_buffers
-  elseif index > #terminal_buffers then
-    index = 1
-  end
-
-  active_terminal_index = index
-  local target_buf = terminal_buffers[active_terminal_index]
-
-  if not is_valid_terminal_buffer(target_buf) then
-    cleanup_terminal_buffers()
-    return
-  end
-
-  if not is_terminal_panel_visible() then
-    open_terminal_panel_window()
-  else
-    vim.api.nvim_set_current_win(terminal_panel_win)
-  end
-
-  vim.api.nvim_win_set_buf(terminal_panel_win, target_buf)
-
-  configure_current_terminal_buffer()
-  update_terminal_winbar()
-
-  -- Kad se prebaciš na terminal, odmah možeš kucati.
-  vim.cmd("startinsert")
-end
-
--- Pomoćna funkcija:
--- Kreira potpuno novi terminal i smjesti ga u isti donji panel.
-local function create_new_terminal()
-  cleanup_terminal_buffers()
-
-  if not is_terminal_panel_visible() then
-    open_terminal_panel_window()
-  else
-    vim.api.nvim_set_current_win(terminal_panel_win)
-  end
-
-  -- :terminal pravi novi terminal buffer u trenutnom windowu.
-  -- Prethodno prikazani terminal ostaje živ, samo se sakrije u pozadini.
-  vim.cmd("terminal")
-
-  local new_terminal_buf = vim.api.nvim_get_current_buf()
-
-  configure_current_terminal_buffer()
-
-  table.insert(terminal_buffers, new_terminal_buf)
-  active_terminal_index = #terminal_buffers
-
-  update_terminal_winbar()
-
-  vim.cmd("startinsert")
-end
-
--- Pomoćna funkcija:
--- Sakriva cijeli terminal panel, ali svi terminal procesi ostaju živi.
-local function hide_terminal_panel()
-  if not is_terminal_panel_visible() then
-    return
-  end
-
-  local panel_win = terminal_panel_win
-  terminal_panel_win = nil
-
-  pcall(vim.api.nvim_win_close, panel_win, false)
-end
-
--- Pomoćna funkcija:
--- Ubij trenutno aktivni terminal.
+-- Otvara NOVI terminal buffer, ali ga prikazuje u istom donjem panelu.
 --
--- Ako poslije brisanja ostane još terminala:
---   - u istom panelu se automatski prikaže sljedeći/prethodni terminal.
+-- Ako je panel već otvoren:
+--   - novi terminal zamijeni prikaz trenutnog terminala u tom panelu
+--   - stari terminal ostaje živ, samo je skriven iza svog "terminal-taba"
 --
--- Ako ne ostane nijedan:
---   - terminal panel se zatvori.
-local function kill_active_terminal()
-  cleanup_terminal_buffers()
+-- Ako je panel sakriven:
+--   - napravi se jedan donji panel
+--   - novi terminal se odmah otvori u njemu
+local function create_new_terminal_tab()
+  cleanup_terminal_manager()
 
-  if #terminal_buffers == 0 or not active_terminal_index then
-    vim.notify("Nema aktivnog terminala za zatvaranje.", vim.log.levels.WARN)
+  if terminal_panel_is_visible() then
+    vim.api.nvim_set_current_win(terminal_manager.panel_win)
+    vim.cmd("terminal")
+  else
+    local target_window = find_main_editor_like_window()
+
+    if vim.api.nvim_win_is_valid(target_window) then
+      vim.api.nvim_set_current_win(target_window)
+    end
+
+    vim.cmd("belowright split | resize " .. terminal_manager.height .. " | terminal")
+    terminal_manager.panel_win = vim.api.nvim_get_current_win()
+  end
+
+  local terminal_buf = vim.api.nvim_get_current_buf()
+
+  -- Terminal je poseban buffer i ne treba ulaziti u standardnu file buffer navigaciju.
+  vim.bo[terminal_buf].buflisted = false
+
+  table.insert(terminal_manager.buffers, terminal_buf)
+  terminal_manager.active_index = #terminal_manager.buffers
+
+  configure_terminal_panel_window()
+  focus_terminal_panel()
+end
+
+-- Pomoćna funkcija:
+-- Sakriva CIJELI donji terminal panel, ali NE ubija terminal procese.
+--
+-- To znači:
+--   - svi terminal bufferi ostaju živi
+--   - hide/unhide vraća panel
+--   - vratiš se baš na terminal-tab na kojem si posljednje bio
+local function hide_entire_terminal_panel()
+  cleanup_terminal_manager()
+
+  if not terminal_panel_is_visible() then
     return
   end
 
-  local buf_to_kill = terminal_buffers[active_terminal_index]
+  local panel_win = terminal_manager.panel_win
 
-  if is_valid_terminal_buffer(buf_to_kill) then
-    pcall(vim.api.nvim_buf_delete, buf_to_kill, { force = true })
-  end
+  -- Ako je fokus trenutno na terminal panelu, "hide" zatvara samo prozor.
+  -- Terminal buffer i njegov proces nastavljaju živjeti.
+  vim.api.nvim_set_current_win(panel_win)
+  vim.cmd("hide")
 
-  table.remove(terminal_buffers, active_terminal_index)
+  terminal_manager.panel_win = nil
+end
 
-  if #terminal_buffers == 0 then
-    active_terminal_index = nil
-    hide_terminal_panel()
+-- Pomoćna funkcija:
+-- Toggle cijelog terminal panela.
+--
+-- Ponašanje:
+--   1. Ako je panel vidljiv -> sakrij ga
+--   2. Ako panel nije vidljiv, ali terminali postoje -> vrati posljednji aktivni
+--   3. Ako nijedan terminal ne postoji -> napravi prvi terminal
+local function toggle_terminal_panel()
+  cleanup_terminal_manager()
+
+  if terminal_panel_is_visible() then
+    hide_entire_terminal_panel()
     return
   end
 
-  if active_terminal_index > #terminal_buffers then
-    active_terminal_index = #terminal_buffers
+  if #terminal_manager.buffers == 0 then
+    create_new_terminal_tab()
+    return
   end
 
-  show_terminal_buffer(active_terminal_index)
+  local index_to_restore = terminal_manager.active_index or #terminal_manager.buffers
+  show_terminal_at_index(index_to_restore)
+end
+
+-- Pomoćna funkcija:
+-- Prelazak na sljedeći terminal-tab.
+local function switch_to_next_terminal_tab()
+  cleanup_terminal_manager()
+
+  if #terminal_manager.buffers == 0 then
+    vim.notify("Nema otvorenih terminal-tabova.", vim.log.levels.WARN)
+    return
+  end
+
+  local current_index = terminal_manager.active_index or 1
+  local next_index = current_index + 1
+
+  if next_index > #terminal_manager.buffers then
+    next_index = 1
+  end
+
+  show_terminal_at_index(next_index)
+end
+
+-- Pomoćna funkcija:
+-- Prelazak na prethodni terminal-tab.
+local function switch_to_previous_terminal_tab()
+  cleanup_terminal_manager()
+
+  if #terminal_manager.buffers == 0 then
+    vim.notify("Nema otvorenih terminal-tabova.", vim.log.levels.WARN)
+    return
+  end
+
+  local current_index = terminal_manager.active_index or 1
+  local previous_index = current_index - 1
+
+  if previous_index < 1 then
+    previous_index = #terminal_manager.buffers
+  end
+
+  show_terminal_at_index(previous_index)
+end
+
+-- Pomoćna funkcija:
+-- Gasi SAMO trenutni terminal-tab.
+--
+-- Ponašanje:
+--   - briše se samo terminal koji je trenutno prikazan
+--   - ako postoje drugi terminali, odmah se prikazuje najbliži sljedeći/prethodni
+--   - ako je ubijen zadnji terminal, donji panel se zatvara
+local function kill_current_terminal_tab()
+  cleanup_terminal_manager()
+
+  local current_buf = vim.api.nvim_get_current_buf()
+  local current_index = find_managed_terminal_index(current_buf)
+
+  if not current_index then
+    vim.notify("Trenutni prozor nije terminal-tab kojim upravlja ovaj panel.", vim.log.levels.WARN)
+    return
+  end
+
+  local buffer_to_delete = current_buf
+
+  -- Uklanjamo ga iz naše interne liste.
+  table.remove(terminal_manager.buffers, current_index)
+
+  if #terminal_manager.buffers == 0 then
+    terminal_manager.active_index = nil
+
+    -- Ako je to bio zadnji terminal, zatvaramo panel.
+    if terminal_panel_is_visible() then
+      local panel_win = terminal_manager.panel_win
+      vim.api.nvim_set_current_win(panel_win)
+      vim.cmd("hide")
+      terminal_manager.panel_win = nil
+    end
+  else
+    -- Ako postoje preostali terminali:
+    --   - ako smo ubili zadnji, vrati se na novi zadnji
+    --   - inače ostani na istom indeksu, koji sada pokazuje na sljedeći terminal
+    local replacement_index = math.min(current_index, #terminal_manager.buffers)
+    terminal_manager.active_index = replacement_index
+
+    local replacement_buf = terminal_manager.buffers[replacement_index]
+
+    if terminal_panel_is_visible() and is_valid_terminal_buffer(replacement_buf) then
+      vim.api.nvim_win_set_buf(terminal_manager.panel_win, replacement_buf)
+      focus_terminal_panel()
+    end
+  end
+
+  -- Brisanje terminal buffera gasi terminal proces.
+  if vim.api.nvim_buf_is_valid(buffer_to_delete) then
+    pcall(vim.api.nvim_buf_delete, buffer_to_delete, { force = true })
+  end
+
+  configure_terminal_panel_window()
 end
 
 -- -----------------------------------------------------------------------------
 -- Space + o + t
--- Toggle terminal panela
+-- Toggle cijelog donjeg terminal panela
 -- -----------------------------------------------------------------------------
--- Ponašanje:
---   - ako nema nijednog terminala -> napravi prvi
---   - ako panel nije vidljiv, ali terminali postoje -> prikaži aktivni
---   - ako panel jeste vidljiv -> sakrij cijeli panel
-map("n", "<leader>ot", function()
-  cleanup_terminal_buffers()
-
-  if #terminal_buffers == 0 then
-    create_new_terminal()
-    return
-  end
-
-  if is_terminal_panel_visible() then
-    hide_terminal_panel()
-    return
-  end
-
-  show_terminal_buffer(active_terminal_index or 1)
-end, { desc = "Toggle terminal panel" })
+map("n", "<leader>ot", toggle_terminal_panel, { desc = "Toggle bottom terminal panel" })
 
 -- -----------------------------------------------------------------------------
 -- Space + o + T
--- Novi dodatni terminal u istom panelu
+-- Otvori novi terminal-tab u istom donjem panelu
 -- -----------------------------------------------------------------------------
-map("n", "<leader>oT", function()
-  create_new_terminal()
-end, { desc = "Create extra terminal in terminal panel" })
+map("n", "<leader>oT", create_new_terminal_tab, { desc = "Open new terminal tab in bottom panel" })
 
 -- -----------------------------------------------------------------------------
 -- Space + o + n
--- Sljedeći terminal
+-- Sljedeći terminal-tab
 -- -----------------------------------------------------------------------------
-map("n", "<leader>on", function()
-  cleanup_terminal_buffers()
-
-  if #terminal_buffers == 0 then
-    vim.notify("Nema otvorenih terminala.", vim.log.levels.WARN)
-    return
-  end
-
-  local next_index = (active_terminal_index or 1) + 1
-  if next_index > #terminal_buffers then
-    next_index = 1
-  end
-
-  show_terminal_buffer(next_index)
-end, { desc = "Next terminal" })
+map("n", "<leader>on", switch_to_next_terminal_tab, { desc = "Switch to next terminal tab" })
 
 -- -----------------------------------------------------------------------------
 -- Space + o + p
--- Prethodni terminal
+-- Prethodni terminal-tab
 -- -----------------------------------------------------------------------------
-map("n", "<leader>op", function()
-  cleanup_terminal_buffers()
-
-  if #terminal_buffers == 0 then
-    vim.notify("Nema otvorenih terminala.", vim.log.levels.WARN)
-    return
-  end
-
-  local prev_index = (active_terminal_index or 1) - 1
-  if prev_index < 1 then
-    prev_index = #terminal_buffers
-  end
-
-  show_terminal_buffer(prev_index)
-end, { desc = "Previous terminal" })
+map("n", "<leader>op", switch_to_previous_terminal_tab, { desc = "Switch to previous terminal tab" })
 
 -- -----------------------------------------------------------------------------
 -- Space + o + k
--- Sakrij terminal panel
+-- Sakrij CIJELI terminal panel, svi terminal procesi ostaju živi
 -- -----------------------------------------------------------------------------
-map("n", "<leader>ok", function()
-  hide_terminal_panel()
-end, { desc = "Hide terminal panel" })
+map("n", "<leader>ok", hide_entire_terminal_panel, { desc = "Hide entire bottom terminal panel" })
 
 -- -----------------------------------------------------------------------------
 -- Space + o + q
--- Ubij trenutno aktivni terminal
+-- Ubij SAMO trenutni terminal-tab
 -- -----------------------------------------------------------------------------
-map("n", "<leader>oq", function()
-  kill_active_terminal()
-end, { desc = "Kill active terminal" })
+map("n", "<leader>oq", kill_current_terminal_tab, { desc = "Kill current terminal tab" })
 
 -- -----------------------------------------------------------------------------
 -- 5. UNIVERZALNI RUNNER ZA STUDENTSKI WORKFLOW
@@ -581,10 +655,10 @@ local function run_in_bottom_terminal(cmd, title)
   title = title or "Program"
 
   local wrapped_cmd = string.format(
-    "echo '▶ %s'; echo '---------------------------------'; %s; " ..
-    "status=$?; echo ''; echo '---------------------------------'; " ..
-    "if [ $status -eq 0 ]; then echo '✅ Finished successfully.'; else echo '❌ Finished with errors.'; fi; " ..
-    "echo 'Press ENTER to close...'; read",
+    "echo '▶ %s'; echo '---------------------------------'; %s; "
+      .. "status=$?; echo ''; echo '---------------------------------'; "
+      .. "if [ $status -eq 0 ]; then echo '✅ Finished successfully.'; else echo '❌ Finished with errors.'; fi; "
+      .. "echo 'Press ENTER to close...'; read",
     title,
     cmd
   )
@@ -708,7 +782,10 @@ local function find_java_source_root(filepath, project_root)
   for _, candidate in ipairs(candidates) do
     local normalized_candidate = vim.fn.fnamemodify(candidate, ":p")
 
-    if vim.fn.isdirectory(normalized_candidate) == 1 and normalized_file:sub(1, #normalized_candidate) == normalized_candidate then
+    if
+      vim.fn.isdirectory(normalized_candidate) == 1
+      and normalized_file:sub(1, #normalized_candidate) == normalized_candidate
+    then
       return vim.fn.fnamemodify(normalized_candidate, ":p:h")
     end
   end
@@ -884,11 +961,11 @@ map("n", "<leader>rj", function()
   local source_roots_for_find = table.concat(find_sources_parts, " ")
 
   local cmd = string.format(
-    "cd %s && " ..
-    "mkdir -p %s && " ..
-    "find %s -name '*.java' > .nvim-java-build/sources.txt && " ..
-    "javac -encoding UTF-8 -cp %s -d %s @.nvim-java-build/sources.txt && " ..
-    "java -cp %s %s",
+    "cd %s && "
+      .. "mkdir -p %s && "
+      .. "find %s -name '*.java' > .nvim-java-build/sources.txt && "
+      .. "javac -encoding UTF-8 -cp %s -d %s @.nvim-java-build/sources.txt && "
+      .. "java -cp %s %s",
     shesc(project_root),
     shesc(build_dir),
     source_roots_for_find,
@@ -901,9 +978,14 @@ map("n", "<leader>rj", function()
   local title = "Java: " .. main_class
 
   vim.notify(
-    "Java project root: " .. project_root .. "\n" ..
-    "Java source root: " .. source_root .. "\n" ..
-    "Java main class: " .. main_class,
+    "Java project root: "
+      .. project_root
+      .. "\n"
+      .. "Java source root: "
+      .. source_root
+      .. "\n"
+      .. "Java main class: "
+      .. main_class,
     vim.log.levels.INFO
   )
 
@@ -973,3 +1055,4 @@ map("n", "<leader>ro", function()
 
   run_in_bottom_terminal(cmd, "OpenGL C++: " .. basename)
 end, { desc = "Compile and run C++ OpenGL program" })
+

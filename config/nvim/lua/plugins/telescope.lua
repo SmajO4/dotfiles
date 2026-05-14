@@ -10,7 +10,7 @@ return {
     "nvim-telescope/telescope.nvim",
     opts = {
       defaults = {
-        
+
         -- ---------------------------------------------------------
         -- Izgled pretraživača (Layout & UI)
         -- ---------------------------------------------------------
@@ -21,14 +21,27 @@ return {
             preview_width = 0.5,        -- Prozor za vizuelni pregled fajla zauzima desnu polovinu (50%)
           },
         },
-        
+
         -- ---------------------------------------------------------
         -- Logika obrade podataka (Poredak i Ignorisanje)
         -- ---------------------------------------------------------
         sorting_strategy = "ascending", -- Prikazuje najrelevantnije rezultate direktno ispod linije za unos
-        
-        -- Zabrana pretrage u sistemskim i builds folderima kako bi pretraga koda bila trenutna
-        file_ignore_patterns = { "node_modules", ".git/", "target/", "build/" },
+
+        -- Zabrana pretrage kroz sistemske, dependency i build foldere.
+        -- Ovo posebno pomaže za:
+        --   - Node/Vite projekte
+        --   - Java build output
+        --   - frontend dist/coverage foldere
+        file_ignore_patterns = {
+          "node_modules/",
+          "%.git/",
+          "target/",
+          "build/",
+          "dist/",
+          "coverage/",
+          "%.next/",
+          "%.nvim%-java%-build/",
+        },
       },
     },
   },

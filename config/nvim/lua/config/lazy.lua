@@ -31,22 +31,26 @@ require("lazy").setup({
   spec = {
     -- Baza: Učitavanje standardne arhitekture LazyVim-a
     { "LazyVim/LazyVim", import = "lazyvim.plugins" },
-    
-    -- Zvanične ekstenzije: Specijalizovana podrška za jezike (Java)
-    { import = "lazyvim.plugins.extras.lang.java" },
-    
+
+    -- Napomena:
+    --   LazyVim extras koje biraš kroz :LazyExtras se čuvaju u lazyvim.json.
+    --   Zato ih ovdje ne dupliramo ručnim importima.
+    --
+    --   U tvojoj konfiguraciji već koristiš npr. lang.java kroz LazyExtras,
+    --   pa ovaj fajl ostaje čist i služi samo kao bootstrap + plugin loader.
+
     -- Korisnički plugini: Učitava sve fajlove iz foldera 'lua/plugins/'
     { import = "plugins" },
   },
-  
+
   defaults = {
-    lazy = false,    -- Isključeno "lijeno učitavanje" po defaultu; plugini se učitavaju odmah
-    version = false, -- Prati najnovije 'commitove' umjesto fiksiranih verzija
+    lazy = false,     -- Isključeno "lijeno učitavanje" po defaultu; plugini se učitavaju odmah
+    version = false,  -- Prati najnovije 'commitove' umjesto fiksiranih verzija
   },
-  
+
   -- Definiše temu koja se prikazuje dok se plugini instaliraju prvi put
-  install = { colorscheme = { "tokyonight" } }, 
-  
+  install = { colorscheme = { "tokyonight" } },
+
   checker = {
     enabled = true, -- Omogućava provjeru novih verzija u pozadini
     notify = false, -- Sprječava iskakajuće poruke koje ometaju rad

@@ -3,6 +3,10 @@
 --                                                                            --
 --  Integracija GitHub Copilota u editor. Ovaj fajl se brine za inline        --
 --  prijedloge koda (Ghost text) i za prozor za konverzaciju (Chat).          --
+--                                                                            --
+--  VAŽNA POLITIKA OVE KONFIGURACIJE:                                          --
+--    Copilot postoji i spreman je za korištenje, ali je pri pokretanju       --
+--    Neovima GLOBALNO ISKLJUČEN. Korisnik ga ručno uključuje kada želi.       --
 -- ========================================================================== --
 
 return {
@@ -13,7 +17,19 @@ return {
   -- Opis:
   --   Obezbjeđuje sivi tekst koji Copilot nudi dok korisnik kuca kod.
   --
+  -- Status po pokretanju Neovima:
+  --   - Copilot je instaliran
+  --   - Copilot je inicijalno GLOBALNO ugašen
+  --   - Uključuješ ga ručno preko <leader>ce
+  --
   -- Bitne prečice:
+  --   <leader>ce  = uključi Copilot globalno
+  --   <leader>cd  = isključi Copilot globalno
+  --   <leader>cs  = pokaži Copilot status
+  --   <leader>ca  = uključi/isključi automatski ghost text za trenutni buffer
+  --   <leader>cp  = otvori/zatvori suggestion panel
+  --
+  -- Kada je Copilot uključen:
   --   <C-l>       = prihvati cijeli Copilot prijedlog
   --   <M-l>       = rezervna alternativa za prihvatanje prijedloga
   --   <M-w>       = prihvati jednu riječ iz prijedloga
@@ -21,7 +37,6 @@ return {
   --   <M-]>       = sljedeći Copilot prijedlog
   --   <M-[>       = prethodni Copilot prijedlog
   --   <C-]>       = odbaci trenutni prijedlog
-  --   <leader>ca  = uključi/isključi automatski ghost text za trenutni buffer
   {
     "zbirenbaum/copilot.lua",
     cmd = "Copilot",
@@ -34,17 +49,16 @@ return {
         auto_trigger = true,
         debounce = 75,
 
-        -- [FIX SMAJO] OVO JE BILO TRUE!
-        -- Blink.cmp je prebrz i stalno otvara padajući meni. Ako je ovo true,
-        -- Copilot će stalno bježati i gasiti sivi tekst. Stavljamo na false
-        -- da bi ghost text i Blink mogli živjeti u harmoniji.
+        -- [FIX SMAJO]
+        -- Blink.cmp i Copilot ghost text mogu živjeti zajedno.
+        -- Ako je ovo true, ghost text često nestaje dok completion meni radi.
         hide_during_completion = false,
 
         keymap = {
-          -- [FIX SMAJO] Gasimo defaultni accept. 
-          -- Zašto? Zato što ga prepuštamo našoj "agresivnoj" manualnoj funkciji 
-          -- u config bloku ispod koja garantuje da terminal ne pojede <C-l>.
-          accept = false, 
+          -- [FIX SMAJO]
+          -- Gasimo defaultni Copilot accept i koristimo našu preciznu logiku
+          -- ispod, koja podržava <C-l> i <M-l> bez rušenja fallback ponašanja.
+          accept = false,
           accept_word = "<M-w>",
           accept_line = "<M-a>",
           next = "<M-]>",
@@ -85,24 +99,32 @@ return {
       require("copilot").setup(opts)
 
       -- -----------------------------------------------------------------------
+      -- [NOVO SMAJO] Copilot je GLOBALNO ISKLJUČEN pri svakom startu Neovima
+      -- -----------------------------------------------------------------------
+      -- Ovo omogućava:
+      --   - da plugin ostane instaliran i spreman
+      --   - da ti ništa ne iskače dok ga ne zatražiš
+      --   - da ga ručno pališ preko <leader>ce
+      local ok_command, copilot_command = pcall(require, "copilot.command")
+      if ok_command and copilot_command and copilot_command.disable then
+        copilot_command.disable()
+      end
+
+      -- -----------------------------------------------------------------------
       -- [FIX SMAJO] APSOLUTNA KONTROLA NAD <C-l> i <M-l>
       -- -----------------------------------------------------------------------
-      -- Ova logika stvara "neprobojni" štit. Kada pritisneš <C-l>, Neovim prvo
-      -- pita Copilota: "Da li korisnik trenutno vidi sivi tekst?".
-      -- Ako je odgovor DA -> prihvati kod i ne radi ništa drugo.
-      -- Ako je odgovor NE -> simuliraj normalan pritisak <C-l> (ili <M-l>).
-      
+      -- Kada pritisneš <C-l> ili <M-l>:
+      --   - ako je Copilot suggestion vidljiv -> prihvati suggestion
+      --   - ako nije vidljiv -> pusti normalno ponašanje tog tastera
       local function map_copilot_accept(key)
         vim.keymap.set("i", key, function()
           local ok, suggestion = pcall(require, "copilot.suggestion")
-          
-          -- Ako je modul učitan i ghost text je vidljiv na ekranu
+
           if ok and suggestion.is_visible() then
             suggestion.accept()
-            return "" -- Pojedi taster, ne unosi ništa u kod
+            return ""
           end
-          
-          -- U suprotnom, vrati normalno ponašanje tastera
+
           return vim.api.nvim_replace_termcodes(key, true, false, true)
         end, {
           expr = true,
@@ -113,17 +135,53 @@ return {
 
       map_copilot_accept("<C-l>")
       map_copilot_accept("<M-l>")
-
-      -- [FIX SMAJO] OBRISANO: Tvoji stari autocmds za BlinkCmpMenuOpen.
-      -- Brisanjem toga smo ukinuli "race condition" gdje ti se Copilot
-      -- potpuno zaledi i nestane iz buffera. Sada su nezavisni.
     end,
 
     keys = {
-      { "<leader>cp", function() require("copilot.panel").toggle() end, desc = "Toggle Copilot suggestion panel" },
-      { "<leader>cs", "<cmd>Copilot status<CR>", desc = "Show Copilot status" },
-      { "<leader>ce", "<cmd>Copilot enable<CR>", desc = "Enable Copilot globally" },
-      { "<leader>cd", "<cmd>Copilot disable<CR>", desc = "Disable Copilot globally" },
+      {
+        "<leader>cp",
+        function()
+          require("copilot.panel").toggle()
+        end,
+        desc = "Toggle Copilot suggestion panel",
+      },
+
+      {
+        "<leader>cs",
+        "<cmd>Copilot status<CR>",
+        desc = "Show Copilot status",
+      },
+
+      {
+        "<leader>ce",
+        function()
+          local ok, copilot_command = pcall(require, "copilot.command")
+          if not ok then
+            vim.notify("Copilot command modul nije dostupan.", vim.log.levels.WARN)
+            return
+          end
+
+          copilot_command.enable()
+          vim.notify("Copilot je uključen.", vim.log.levels.INFO)
+        end,
+        desc = "Enable Copilot globally",
+      },
+
+      {
+        "<leader>cd",
+        function()
+          local ok, copilot_command = pcall(require, "copilot.command")
+          if not ok then
+            vim.notify("Copilot command modul nije dostupan.", vim.log.levels.WARN)
+            return
+          end
+
+          copilot_command.disable()
+          vim.notify("Copilot je isključen.", vim.log.levels.INFO)
+        end,
+        desc = "Disable Copilot globally",
+      },
+
       {
         "<leader>ca",
         function()
@@ -132,8 +190,12 @@ return {
             vim.notify("Copilot suggestion modul još nije učitan.", vim.log.levels.WARN)
             return
           end
+
           suggestion.toggle_auto_trigger()
-          vim.notify("Copilot ghost text prebačen. Za globalno koristi <leader>cd.", vim.log.levels.INFO)
+          vim.notify(
+            "Copilot ghost text za trenutni buffer je prebačen. Ako je Copilot globalno ugašen, prvo koristi <leader>ce.",
+            vim.log.levels.INFO
+          )
         end,
         desc = "Toggle Copilot ghost text for current buffer",
       },
@@ -143,8 +205,11 @@ return {
   -- ---------------------------------------------------------------------------
   -- SEKCIJA 2: COPILOT CHAT INTERFEJS
   -- ---------------------------------------------------------------------------
-  -- (Ostatak tvog koda za chat ostaje potpuno identičan, jer je savršeno
-  -- iskonfigurisan i problem je bio samo u Ghost text sekciji iznad).
+  -- Napomena:
+  --   Ako želiš koristiti Copilot Chat nakon starta Neovima,
+  --   najčišći workflow je:
+  --     1. <leader>ce  -> uključi Copilot
+  --     2. <leader>cc  -> otvori Copilot Chat
   {
     "CopilotC-Nvim/CopilotChat.nvim",
     branch = "main",
@@ -191,3 +256,4 @@ return {
     },
   },
 }
+
